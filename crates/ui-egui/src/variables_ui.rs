@@ -130,7 +130,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, fields: &mut Map<String,
     } else if page == "define" {
         define_page(ui, &t, &layers, &mut state);
     } else {
-        data_sets_page(ui, &t, &mut state, fields);
+        data_sets_page(app, ui, &t, &mut state, fields);
     }
 
     fields.insert("__variables".into(), state);
@@ -206,7 +206,7 @@ fn data_set_index(fields: &Map<String, Value>, len: usize) -> usize {
     fields.get("__cur").and_then(Value::as_u64).and_then(|v| usize::try_from(v).ok()).filter(|&i| i < len).unwrap_or(0)
 }
 
-fn data_sets_page(ui: &mut egui::Ui, _t: &Tokens, state: &mut Value, fields: &mut Map<String, Value>) {
+fn data_sets_page(app: &mut PhotocraftApp, ui: &mut egui::Ui, _t: &Tokens, state: &mut Value, fields: &mut Map<String, Value>) {
     let def_meta: Vec<(String, String)> = state
         .get("defs")
         .and_then(Value::as_array)
@@ -220,6 +220,9 @@ fn data_sets_page(ui: &mut egui::Ui, _t: &Tokens, state: &mut Value, fields: &mu
         .unwrap_or_default();
     if def_meta.is_empty() {
         ui.weak(tl!("Define at least one variable first."));
+        if ui.button(tl!("Define")).clicked() {
+            fields.insert("__page".into(), json!("define"));
+        }
         return;
     }
     let Some(sets) = state.get_mut("dataSets").and_then(Value::as_array_mut) else { return };
@@ -242,6 +245,12 @@ fn data_sets_page(ui: &mut egui::Ui, _t: &Tokens, state: &mut Value, fields: &mu
         if !sets.is_empty() && ui.button(tl!("Delete")).clicked() {
             sets.remove(cur);
             cur = cur.saturating_sub(1);
+        }
+        if ui.button(tl!("Import…")).clicked() {
+            let _ = import_dialog(app);
+        }
+        if !sets.is_empty() && ui.button(tl!("Export…")).clicked() {
+            let _ = export_csv_dialog(app);
         }
     });
     ui.separator();
@@ -316,6 +325,68 @@ pub fn confirm(app: &mut PhotocraftApp, fields: &Map<String, Value>) -> Result<V
         return app.run("image.applyDataSet", json!({"name": name}));
     }
     Ok(json!({"defined": true}))
+}
+
+/// File › Import › Variable Data Sets… or the dialog's Import… button.
+pub fn import_dialog(app: &mut PhotocraftApp) -> Result<Value, String> {
+    // If the variables dialog is currently open, commit any newly defined variables to the document first
+    if let Some(dlg) = app.ui.dialogs.iter().find(|d| owns(&d.fields)) {
+        if let Some(defs) = dlg.fields.get("__variables").and_then(|v| v.get("defs")).cloned() {
+            let _ = app.run("image.variables.define", json!({"defs": defs}));
+        }
+    }
+    app.pick_file_bytes_filtered(&["csv", "tsv", "txt"], move |app, path, _bytes| {
+        let r = app.run("file.import.variableDataSets", json!({"path": path}))?;
+        let count = r.get("imported").and_then(Value::as_u64).unwrap_or(0);
+        // Refresh the open variables dialog's state from the active document
+        if let Some(dlg) = app.ui.dialogs.iter_mut().find(|d| owns(&d.fields)) {
+            if let Some(st) = app.session.active() {
+                let state = to_state(&st.doc.variables);
+                dlg.fields.insert("__variables".into(), state);
+                dlg.fields.insert("__cur".into(), json!(0));
+                dlg.fields.insert("__page".into(), json!("dataSets"));
+            }
+        }
+        app.ui.status_error = false;
+        app.ui.status = format!("Imported {count} data sets from {}", crate::file_open::display_name(&path));
+        Ok(r)
+    })
+}
+
+/// Export current data sets as a CSV.
+pub fn export_csv_dialog(app: &mut PhotocraftApp) -> Result<Value, String> {
+    let st = app.session.active().ok_or("no document")?;
+    let vars = &st.doc.variables;
+    if vars.data_sets.is_empty() {
+        return Err("no data sets to export".into());
+    }
+    let mut header = vec!["DataSet".to_string()];
+    for def in &vars.defs {
+        header.push(def.name.clone());
+    }
+    let mut rows = vec![header.join(",")];
+    for set in &vars.data_sets {
+        let mut row = vec![format!("\"{}\"", set.name.replace('"', "\"\""))];
+        for def in &vars.defs {
+            let val = set.values.iter().find(|v| v.variable == def.name).map_or(String::new(), |v| match &v.value {
+                photocraft_doc::variables::Value::Visibility(b) => b.to_string(),
+                photocraft_doc::variables::Value::Text(t) => format!("\"{}\"", t.replace('"', "\"\"")),
+                photocraft_doc::variables::Value::Pixels(p) => format!("\"{}\"", p.replace('"', "\"\"")),
+            });
+            row.push(val);
+        }
+        rows.push(row.join(","));
+    }
+    let csv_content = rows.join("\n");
+    let stem = st.doc.name.rsplit_once('.').map_or(st.doc.name.as_str(), |(a, _)| a);
+    let suggested = format!("{stem}_datasets.csv");
+    app.pick_save(&suggested, move |app, path| {
+        let write = app.services.write.as_mut().ok_or("no writer configured")?;
+        write(&path, csv_content.as_bytes())?;
+        app.ui.status_error = false;
+        app.ui.status = format!("Exported data sets to {}", crate::file_open::display_name(&path));
+        Ok(json!({"path": path}))
+    })
 }
 
 #[cfg(test)]

@@ -448,6 +448,7 @@ fn wraps(id: &str) -> bool {
             | "file.automate.lensCorrection"
             | "file.export.layersToFiles"
             | "file.export.layerCompsToFiles"
+            | "file.export.dataSetsAsFiles"
             | "file.export.artboardsToFiles"
             | "file.export.artboardsToPdf"
             | "layer.new.artboard"
@@ -1025,6 +1026,14 @@ fn front(app: &mut PhotocraftApp, id: &str, params: &Value) -> Option<Result<Val
                 json!({"dir": dir, "prefix": prefix, "format": "png"})
             };
             dialog(app, fields, json!({"format": ["png", "jpg", "psd", "tiff", "webp", "bmp"]}))
+        }
+        "file.export.dataSetsAsFiles" => {
+            let (_, _, _) = doc?;
+            dialog(
+                app,
+                json!({"dir": dir, "format": "png", "naming": "{name}"}),
+                json!({"format": ["png", "jpg", "psd", "tiff", "webp", "bmp"]}),
+            )
         }
         "file.export.artboardsToPdf" => {
             let (_, _, name) = doc?;
